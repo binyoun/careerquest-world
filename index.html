@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CareerQuest World</title>
+<meta name="description" content="A shared browser world for rehearsing first-job situations. Missions feed PACE capability traces.">
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F6F4EF; --card:#FFFFFF; --ink:#111111; --muted:#5A5A57; --line:#E2E0DB;
+  --navy:#1E3765; --connected:#DA291C; --adaptive:#1E7A73; --critical:#C68A1E; --good:#2E7D46;
+  --shadow:0 10px 30px rgba(20,25,40,.16);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--paper);color:var(--ink);font-family:'Inter',system-ui,sans-serif;font-size:15px}
+canvas#world{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+button{font:inherit;cursor:pointer}
+.mono{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.02em}
+.h{font-family:'Archivo',sans-serif;font-weight:800;letter-spacing:-.01em;margin:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
+.btn{border:1px solid var(--ink);background:var(--ink);color:#fff;border-radius:999px;padding:9px 16px;font-weight:600}
+.btn.ghost{background:transparent;color:var(--ink)}
+.btn:disabled{opacity:.35;cursor:default}
+.pill{display:inline-block;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:600;color:#fff}
+
+/* intro */
+#intro{position:fixed;inset:0;display:grid;place-items:center;background:rgba(246,244,239,.82);backdrop-filter:blur(6px);z-index:30;padding:16px}
+#intro .card{max-width:440px;width:100%;padding:26px}
+#intro p{color:var(--muted);line-height:1.5;margin:10px 0 18px}
+#intro label{display:block;font-weight:600;margin:14px 0 6px}
+#intro input{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;font:inherit}
+.swatches{display:flex;gap:10px}
+.swatch{width:34px;height:34px;border-radius:50%;border:3px solid transparent}
+.swatch[aria-pressed="true"]{border-color:var(--ink)}
+#intro .btn{margin-top:20px;width:100%;padding:12px}
+
+/* hud */
+#hud{position:fixed;top:14px;left:14px;padding:12px 14px;z-index:10;max-width:calc(100% - 28px)}
+#hud .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px;color:var(--muted)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);display:inline-block;margin-right:5px}
+.dot.on{background:var(--good)}
+#invite{padding:4px 10px;font-size:12px}
+
+#passBtn{position:fixed;top:14px;right:14px;z-index:10;padding:10px 12px;border:1px solid var(--line);background:var(--card);border-radius:14px;box-shadow:var(--shadow);text-align:left}
+.meters{display:flex;gap:6px;margin-top:6px}
+.meter{display:flex;gap:2px}
+.meter i{display:block;width:12px;height:6px;border-radius:2px;background:var(--line)}
+
+#hint{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);padding:8px 14px;z-index:9;color:var(--muted);font-size:13px;white-space:nowrap;max-width:calc(100% - 32px);overflow:hidden;text-overflow:ellipsis}
+
+/* chat */
+#chat{position:fixed;left:14px;bottom:60px;width:300px;max-width:calc(100% - 28px);z-index:10;padding:10px}
+#chatLog{max-height:150px;overflow-y:auto;font-size:13px;line-height:1.4;margin-bottom:8px}
+#chatLog div{margin:2px 0}
+#chatLog b{font-weight:600}
+#chatLog .sys{color:var(--muted);font-style:italic}
+#chatForm{display:flex;gap:6px}
+#chatInput{flex:1;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:999px;font:inherit;font-size:13px}
+
+/* mission + passport panels */
+.panel{position:fixed;top:14px;right:14px;bottom:14px;width:420px;max-width:calc(100% - 28px);z-index:20;padding:22px;overflow-y:auto;display:none}
+.panel.open{display:block}
+.panel .close{position:absolute;top:14px;right:14px;border:none;background:none;font-size:22px;line-height:1;color:var(--muted)}
+.panel p{line-height:1.55}
+.setup{color:var(--muted)}
+.prompt{font-weight:600;margin-top:18px}
+.choices{display:grid;gap:8px;margin-top:10px}
+.choice{color:var(--ink);text-align:left;border:1px solid var(--line);background:var(--paper);border-radius:10px;padding:11px 12px;line-height:1.4}
+.choice:hover:not(:disabled){border-color:var(--ink)}
+.choice.picked{border-color:var(--ink);background:#fff;box-shadow:inset 4px 0 0 var(--accent)}
+.choice:disabled:not(.picked){opacity:.45}
+.outcome{margin-top:14px;padding:12px 14px;border-left:4px solid var(--accent);background:var(--paper);border-radius:0 10px 10px 0}
+.outcome .shows{font-weight:600;margin-top:8px}
+.others{margin-top:10px;color:var(--muted);font-size:13px}
+.presence{margin-top:8px;font-size:13px;color:var(--navy);font-weight:500}
+textarea{width:100%;min-height:86px;padding:10px;border:1px solid var(--line);border-radius:10px;font:inherit;line-height:1.45;resize:vertical}
+.q{font-weight:600;margin:16px 0 6px;line-height:1.45}
+.actions{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
+.msg{font-size:13px;margin-top:8px;min-height:18px}
+
+.capRow{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line)}
+.trace{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px;font-size:13px;line-height:1.45}
+.trace .meta{color:var(--muted);margin-bottom:4px}
+.empty{color:var(--muted);font-size:14px}
+
+@media (max-width:640px){
+  #hud{max-width:calc(100% - 150px)}
+  #hud .row{gap:6px}
+  #chat{width:auto;right:14px;bottom:54px}
+  #chatLog{max-height:80px}
+  .panel{top:auto;left:8px;right:8px;bottom:8px;width:auto;max-width:none;height:72%}
+  #hint{font-size:12px}
+}
+</style>
+</head>
+<body>
+<canvas id="world"></canvas>
+
+<div id="intro">
+  <div class="card">
+    <div class="mono" style="color:var(--muted)">CareerQuest 140 prototype / linked to PACE</div>
+    <h1 class="h" style="font-size:28px;margin-top:6px">CareerQuest World</h1>
+    <p>A shared space for rehearsing your first months at work. Walk into a room, face a situation with whoever else is there, then write what it showed you. Each mission leaves a PACE trace.</p>
+    <label for="nameInput">Your name</label>
+    <input id="nameInput" maxlength="20" placeholder="e.g. Linh" autocomplete="off">
+    <label>Avatar colour</label>
+    <div class="swatches" id="swatches"></div>
+    <button class="btn" id="enterBtn">Enter the world</button>
+  </div>
+</div>
+
+<div id="hud" class="card" hidden>
+  <div class="h" style="font-size:16px">CareerQuest World</div>
+  <div class="row mono">
+    <span><span class="dot" id="netDot"></span><span id="netText">connecting</span></span>
+    <span id="roomText"></span>
+    <button class="btn ghost" id="invite">Copy invite link</button>
+  </div>
+</div>
+
+<button id="passBtn" hidden aria-label="Open passport">
+  <div class="mono" style="color:var(--muted)">PACE passport</div>
+  <div class="meters" id="hudMeters"></div>
+</button>
+
+<div id="chat" class="card" hidden>
+  <div id="chatLog" aria-live="polite"></div>
+  <form id="chatForm" autocomplete="off">
+    <input id="chatInput" maxlength="200" placeholder="Say something (Enter)">
+    <button class="btn" style="padding:6px 12px;font-size:13px">Send</button>
+  </form>
+</div>
+
+<div id="hint" class="card" hidden>WASD / arrows or tap the ground to walk. Drag to look. Step into a coloured ring to start.</div>
+
+<section id="mission" class="panel card" aria-label="Mission"></section>
+<section id="passport" class="panel card" aria-label="Passport"></section>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module" src="main.js"></script>
+</body>
+</html>
