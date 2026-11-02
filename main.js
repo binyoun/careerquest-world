@@ -18,8 +18,13 @@ const savePassport = () => store.set("cqw-passport", passport);
 
 // ---------- scene ----------
 const canvas = $("world");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+// no WebGL (old laptops, some school machines) means the accessible view is the only view
+let renderer = null;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+} catch (err) { console.warn("WebGL unavailable, using accessible view", err); }
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color("#DCE6EA");
 scene.fog = new THREE.Fog("#DCE6EA", 30, 70);
@@ -208,18 +213,24 @@ let lastSent = "";
 function peerName(id) { return peers.get(id)?.name || "someone"; }
 function upsertPeer(id, d) {
   let p = peers.get(id);
+  // panels only re-render when who-is-where changes, not on every step, so keyboard
+  // and screen-reader focus is not thrown away while someone walks past
+  let changed = false;
   if (!p) {
     p = { avatar: makeAvatar(d.c, d.n), name: d.n, color: d.c, x: d.x, z: d.z, ry: d.r, zone: d.zn || null };
     p.avatar.position.set(d.x, 0, d.z);
     peers.set(id, p);
     sysChat(`${d.n} is here`);
+    changed = true;
   } else if (p.name !== d.n || p.color !== d.c) {
     p.name = d.n; p.color = d.c;
     p.avatar.userData.body.children[0].material.color.set(d.c);
     setLabel(p.avatar, d.n, d.c);
+    changed = true;
   }
+  if ((d.zn || null) !== p.zone) changed = true;
   Object.assign(p, { x: d.x, z: d.z, ry: d.r, zone: d.zn || null, moving: !!d.m });
-  if (mission.mid) renderMission();
+  if (changed) { if (mission.mid) renderMission(); renderLite(); }
 }
 function removePeer(id) {
   const p = peers.get(id);
@@ -229,16 +240,24 @@ function removePeer(id) {
   sysChat(`${p.name} left`);
   updateNet();
   if (mission.mid) renderMission();
+  renderLite();
 }
 function myState() { return { n: me.name, c: me.color, x: +me.x.toFixed(2), z: +me.z.toFixed(2), r: +me.ry.toFixed(2), zn: me.zone, m: me.moving }; }
+let netStatus = "connecting";
+const NET_LABEL = { server: "CareerQuest server", p2p: "peer-to-peer", reconnecting: "reconnecting", full: "room full" };
 function updateNet() {
-  $("netDot").classList.toggle("on", !!net);
-  $("netText").textContent = net ? `${peers.size + 1} online` : "solo (no connection)";
+  const on = !!net && netStatus !== "reconnecting";
+  $("netDot").classList.toggle("on", on);
+  $("netText").textContent = net
+    ? `${peers.size + 1} online / ${NET_LABEL[netStatus] || netStatus}`
+    : netStatus === "connecting" ? "connecting" : "solo (no connection)";
 }
 
-// choice tallies from everyone in this world, keyed mission:step -> Map(peer -> choiceIndex)
+// live tallies from people in this room, keyed mission:step -> Map(peer -> choiceIndex)
 const tallies = new Map();
 function tally(key) { if (!tallies.has(key)) tallies.set(key, new Map()); return tallies.get(key); }
+// all-time anonymous counts kept by the server, keyed mission:step -> {choiceIndex: count}
+let allTime = {};
 
 async function startNet() {
   net = await connect(ROOM, {
@@ -246,8 +265,14 @@ async function startNet() {
     chat: (id, d) => addChat(peerName(id), String(d?.t || "").slice(0, 200), peers.get(id)?.color),
     choice: (id, d) => { tally(`${d.m}:${d.s}`).set(id, d.k); if (mission.mid === d.m) renderMission(); },
     join: (id) => { net?.sendState(myState(), id); updateNet(); },
-    leave: (id) => removePeer(id)
+    leave: (id) => removePeer(id),
+    // server only: a reconnect resends everyone, so start from a clean slate
+    reset: () => { [...peers.keys()].forEach((id) => { scene.remove(peers.get(id).avatar); peers.delete(id); }); lastSent = ""; },
+    tallies: (t) => { allTime = t; },
+    total: (key, t) => { allTime[key] = t; if (mission.mid) renderMission(); },
+    status: (s) => { netStatus = s; updateNet(); if (s === "server" && net) net.sendState(myState()); }
   });
+  if (!net) netStatus = "solo";
   updateNet();
   if (net) setInterval(() => {
     const s = JSON.stringify(myState());
@@ -290,8 +315,14 @@ function openMission(id) {
   $("passport").classList.remove("open");
   $("mission").classList.add("open");
   renderMission();
+  $("mission").querySelector("h2")?.focus();
 }
-function closeMission() { mission.mid = null; $("mission").classList.remove("open"); }
+function closeMission() {
+  if (!mission.mid) return;
+  mission.mid = null;
+  $("mission").classList.remove("open");
+  if (lite) $("lite").querySelector("button")?.focus();
+}
 
 function renderMission() {
   const m = MISSIONS[mission.mid];
@@ -314,12 +345,19 @@ function renderMission() {
     body += `</div>`;
     if (pick != null) {
       const c = st.choices[pick];
-      body += `<div class="outcome"><div>${esc(c.outcome)}</div><div class="shows">${esc(c.shows)}</div></div>`;
-      const t = tally(`${m.id}:${mission.step}`);
+      body += `<div class="outcome" role="status"><div>${esc(c.outcome)}</div><div class="shows">${esc(c.shows)}</div></div>`;
+      const key = `${m.id}:${mission.step}`;
+      const t = tally(key);
       if (t.size) {
         const counts = [0, 0, 0];
         t.forEach((k) => { if (counts[k] != null) counts[k]++; });
-        body += `<div class="others">Others in this world chose: ${counts.map((n, i) => `${letter(i)} ${n}`).join(" / ")}</div>`;
+        body += `<div class="others">Others here right now chose: ${counts.map((n, i) => `${letter(i)} ${n}`).join(" / ")}</div>`;
+      }
+      const all = allTime[key];
+      if (all) {
+        const counts = [0, 1, 2].map((i) => all[i] || 0);
+        const sum = counts.reduce((a, b) => a + b, 0);
+        body += `<div class="others">All students so far (${sum}): ${counts.map((n, i) => `${letter(i)} ${Math.round((n / sum) * 100)}%`).join(" / ")}</div>`;
       }
       const last = mission.step === m.steps.length - 1;
       body += `<div class="actions"><button class="btn" id="mNext">${last ? "Write your trace" : "Next situation"}</button></div>`;
@@ -327,8 +365,8 @@ function renderMission() {
   } else if (mission.phase === "reflect") {
     body += `<p class="prompt">Turn this into a PACE trace</p>
       <div class="setup" style="font-size:13px">Your choices: ${mission.picks.map((k, s) => `${s + 1}${letter(k)}`).join(", ")}. Both reflections are needed for the trace to count as deepened.</div>
-      <div class="q">${esc(m.reflect.cap)}</div><textarea id="rCap"></textarea>
-      <div class="q">${esc(m.reflect.identity)}</div><textarea id="rId"></textarea>
+      <div class="q">${esc(m.reflect.cap)}</div><textarea id="rCap" aria-label="Capability reflection"></textarea>
+      <div class="q">${esc(m.reflect.identity)}</div><textarea id="rId" aria-label="Identity reflection"></textarea>
       <div class="actions"><button class="btn" id="mSave">Save to passport</button></div>
       <div class="msg" id="mMsg"></div>`;
   } else {
@@ -337,14 +375,16 @@ function renderMission() {
       <div class="actions"><button class="btn ghost" id="mAgain">Replay this room</button><button class="btn" id="mDone">Back to the world</button></div>`;
   }
 
-  // keep typed reflections when the panel re-renders for presence updates
+  // keep typed reflections and keyboard focus when the panel re-renders for presence updates
   const draft = { cap: $("rCap")?.value, id: $("rId")?.value };
+  const focused = el.contains(document.activeElement) ? (document.activeElement.id || document.activeElement.dataset.i) : null;
   el.innerHTML = `<button class="close" aria-label="Close">&times;</button>
     <span class="pill" style="background:${m.color}">${esc(m.cap)}</span>
-    <h2 class="h" style="font-size:24px;margin-top:10px">${esc(m.title)}</h2>
+    <h2 class="h" tabindex="-1" style="font-size:24px;margin-top:10px">${esc(m.title)}</h2>
     <div class="mono" style="color:var(--muted);margin-top:4px">${esc(m.room)}</div>
     <p class="setup">${esc(m.setup)}</p>${presence}${body}`;
   if (draft.cap != null && $("rCap")) { $("rCap").value = draft.cap; $("rId").value = draft.id; }
+  if (focused != null) (el.querySelector(`#${CSS.escape(focused)}`) || el.querySelector(`[data-i="${focused}"]`))?.focus();
 
   el.querySelector(".close").onclick = closeMission;
   el.querySelectorAll(".choice").forEach((b) => b.onclick = () => {
@@ -352,11 +392,13 @@ function renderMission() {
     mission.picks[mission.step] = k;
     net?.sendChoice({ m: m.id, s: mission.step, k });
     renderMission();
+    $("mNext")?.focus();
   });
   $("mNext") && ($("mNext").onclick = () => {
     if (mission.step < m.steps.length - 1) mission.step++;
     else mission.phase = "reflect";
     renderMission();
+    (el.querySelector(".choice") || $("rCap"))?.focus();
   });
   $("mSave") && ($("mSave").onclick = () => saveTrace(m));
   $("mAgain") && ($("mAgain").onclick = () => openMission(m.id));
@@ -380,6 +422,7 @@ function saveTrace(m) {
   renderMeters();
   mission.phase = "done";
   renderMission();
+  $("mDone")?.focus();
 }
 
 // ---------- passport ----------
@@ -451,8 +494,10 @@ function enter() {
   store.set("cqw-me", { name: me.name, color: me.color });
   player = makeAvatar(me.color, me.name);
   player.position.set(me.x, 0, me.z);
+  const wantLite = $("liteCheck").checked;
   $("intro").remove();
   ["hud", "passBtn", "chat", "hint"].forEach((id) => ($(id).hidden = false));
+  setLite(wantLite);
   $("roomText").textContent = ROOM === "lobby" ? "public lobby" : `room: ${ROOM}`;
   renderMeters();
   updateNet();
@@ -473,9 +518,58 @@ $("invite").onclick = async () => {
   if (ROOM === "lobby") sysChat("Invite links open a private room. Open the link yourself to join it too.");
 };
 
+// ---------- accessible view ----------
+// Same world, same rooms, same people, as plain HTML: keyboard, screen readers, no GPU needed.
+let lite = !renderer || store.get("cqw-lite", false);
+$("liteCheck").checked = lite;
+if (!renderer) { $("liteCheck").disabled = true; $("liteNote").textContent = "This device can't show 3D, so the accessible view is on."; }
+function setLite(on) {
+  lite = on || !renderer;
+  store.set("cqw-lite", lite);
+  document.body.classList.toggle("lite", lite);
+  $("liteBtn").textContent = lite ? "3D view" : "Accessible view";
+  $("liteBtn").hidden = !renderer;
+  $("lite").hidden = !lite;
+  if (lite) $("hint").hidden = true;
+  renderLite();
+}
+$("liteBtn").onclick = () => setLite(!lite);
+function goTo(zoneId) {
+  const z = zones.find((zn) => zn.id === zoneId);
+  moveTarget = null;
+  if (z) { me.x = z.x; me.z = z.z + 0.4; } else { me.x = 0; me.z = 6; }
+  // re-entering the same room re-opens it
+  if (me.zone === zoneId) { me.zone = null; }
+}
+function renderLite() {
+  if (!lite || !started) return;
+  const people = (zid) => [...peers.values()].filter((p) => p.zone === zid).map((p) => esc(p.name));
+  const rooms = Object.values(MISSIONS).map((m) => {
+    const here = people(m.id);
+    return `<li><button class="liteRoom" data-z="${m.id}" style="border-left-color:${m.color}">
+      <span class="pill" style="background:${m.color}">${esc(m.cap)}</span>
+      <b>${esc(m.room)}</b>: ${esc(m.title)}
+      <span class="liteWho">${here.length ? `${here.length} here: ${here.join(", ")}` : "nobody here yet"}</span></button></li>`;
+  }).join("");
+  const plaza = [...peers.values()].filter((p) => !p.zone).map((p) => esc(p.name));
+  $("lite").innerHTML = `<h2 class="h" style="font-size:22px">Rooms</h2>
+    <p class="setup">You are ${me.zone ? `in the ${esc(MISSIONS[me.zone]?.room || "passport")}` : "in the plaza"}. Choose a room to enter it. Everyone else sees you move there.</p>
+    <ul class="liteList">${rooms}
+      <li><button class="liteRoom" data-z="passport" style="border-left-color:var(--navy)"><span class="pill" style="background:var(--navy)">PACE</span> <b>Passport</b>: your traces</button></li>
+      <li><button class="liteRoom" data-z="" style="border-left-color:var(--line)"><b>Plaza</b>: back to the open space
+        <span class="liteWho">${plaza.length ? `${plaza.length} here: ${plaza.join(", ")}` : "nobody here yet"}</span></button></li>
+    </ul>`;
+  $("lite").querySelectorAll(".liteRoom").forEach((b) => (b.onclick = () => goTo(b.dataset.z || null)));
+}
+addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if ($("mission").classList.contains("open")) closeMission();
+  else if ($("passport").classList.contains("open")) { $("passport").classList.remove("open"); $("passBtn").focus(); }
+});
+
 // ---------- loop ----------
 function resize() {
-  renderer.setSize(innerWidth, innerHeight, false);
+  renderer?.setSize(innerWidth, innerHeight, false);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
 }
@@ -519,19 +613,20 @@ function tick() {
     }
     player.position.set(me.x, 0, me.z);
     player.rotation.y = me.ry;
-    player.userData.body.position.y = me.moving ? Math.abs(Math.sin(t * 10)) * 0.08 : 0;
+    player.userData.body.position.y = me.moving && !REDUCED ? Math.abs(Math.sin(t * 10)) * 0.08 : 0;
 
     // zone enter / leave
     const z = zones.find((zn) => Math.hypot(me.x - zn.x, me.z - zn.z) < zn.r);
     const zid = z ? z.id : null;
     if (zid !== me.zone) {
       me.zone = zid;
+      renderLite();
       if (z?.kind === "mission") openMission(z.id);
       else if (z?.kind === "passport") openPassport();
     }
 
     const dist = 9, height = 5.5;
-    camera.position.lerp(new THREE.Vector3(me.x + Math.sin(camYaw) * dist, height, me.z + Math.cos(camYaw) * dist), Math.min(1, dt * 6));
+    camera.position.lerp(new THREE.Vector3(me.x + Math.sin(camYaw) * dist, height, me.z + Math.cos(camYaw) * dist), REDUCED ? 1 : Math.min(1, dt * 6));
     camera.lookAt(me.x, 1.2, me.z);
   } else {
     // slow orbit behind the intro card
@@ -545,7 +640,7 @@ function tick() {
     a.position.z += (p.z - a.position.z) * Math.min(1, dt * 10);
     let d = p.ry - a.rotation.y;
     a.rotation.y += Math.atan2(Math.sin(d), Math.cos(d)) * Math.min(1, dt * 10);
-    a.userData.body.position.y = p.moving ? Math.abs(Math.sin(t * 10)) * 0.08 : 0;
+    a.userData.body.position.y = p.moving && !REDUCED ? Math.abs(Math.sin(t * 10)) * 0.08 : 0;
   });
 
   // fade a pavilion roof while you stand under it
@@ -553,9 +648,9 @@ function tick() {
     const target = me.zone === id ? 0.18 : 1;
     roofs[id].opacity += (target - roofs[id].opacity) * Math.min(1, dt * 6);
   }
-  pulses.forEach((r, i) => { r.material.opacity = 0.55 + Math.sin(t * 2 + i) * 0.3; });
+  if (!REDUCED) pulses.forEach((r, i) => { r.material.opacity = 0.55 + Math.sin(t * 2 + i) * 0.3; });
 
-  renderer.render(scene, camera);
+  if (renderer && !lite) renderer.render(scene, camera);
   requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
