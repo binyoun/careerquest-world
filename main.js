@@ -274,12 +274,20 @@ async function startNet() {
   });
   if (!net) netStatus = "solo";
   updateNet();
+  // Through the server, every message counts against its free daily
+  // allowance: send moves every 2 s when alone and twice a second with
+  // company. Peer-to-peer costs nothing, so it keeps the quick rate.
+  let sinceSent = 0;
   if (net) setInterval(() => {
+    sinceSent += 100;
+    const every = net.mode !== "server" ? 100 : peers.size ? 500 : 2000;
+    if (sinceSent < every) return;
     const s = JSON.stringify(myState());
-    if (s !== lastSent) { net.sendState(myState()); lastSent = s; }
+    if (s !== lastSent) { net.sendState(myState()); lastSent = s; sinceSent = 0; }
   }, 100);
-  // heartbeat so late joiners and lossy links still converge
-  if (net) setInterval(() => net.sendState(myState()), 3000);
+  // heartbeat so late joiners and lossy links still converge (peer-to-peer
+  // only: the server sends everyone's position to whoever arrives)
+  if (net && net.mode !== "server") setInterval(() => net.sendState(myState()), 3000);
 }
 
 // ---------- chat ----------
@@ -635,12 +643,19 @@ function tick() {
   }
 
   peers.forEach((p) => {
+    // moves can arrive only every half second, so walk toward each one at
+    // walking pace (faster when far behind) rather than jumping
     const a = p.avatar;
-    a.position.x += (p.x - a.position.x) * Math.min(1, dt * 10);
-    a.position.z += (p.z - a.position.z) * Math.min(1, dt * 10);
+    const gap = Math.hypot(p.x - a.position.x, p.z - a.position.z);
+    if (gap > 10) a.position.set(p.x, 0, p.z);
+    else if (gap > 0.01) {
+      const step = Math.min(gap, Math.max(4, gap * 2.5) * dt);
+      a.position.x += ((p.x - a.position.x) / gap) * step;
+      a.position.z += ((p.z - a.position.z) / gap) * step;
+    }
     let d = p.ry - a.rotation.y;
     a.rotation.y += Math.atan2(Math.sin(d), Math.cos(d)) * Math.min(1, dt * 10);
-    a.userData.body.position.y = p.moving && !REDUCED ? Math.abs(Math.sin(t * 10)) * 0.08 : 0;
+    a.userData.body.position.y = (p.moving || gap > 0.05) && !REDUCED ? Math.abs(Math.sin(t * 10)) * 0.08 : 0;
   });
 
   // fade a pavilion roof while you stand under it

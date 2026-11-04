@@ -16,8 +16,26 @@ JSON in the same point shape as the PACE tool (binyoun.github.io/pace-tool).
 
 ## Live
 
-- Static copy (peer-to-peer, no server): https://binyoun.github.io/careerquest-world/
-- With the CareerQuest server: wherever `server/` is deployed (see below)
+- https://binyoun.github.io/careerquest-world/ , connected to the CareerQuest server on Cloudflare
+  (`wss://careerquest-world.alt-lab-atelier.workers.dev`, set in `config.js`). If that server can't be
+  reached, it falls back to peer-to-peer.
+
+## Hosting on Cloudflare (live)
+
+`cloudflare/` runs the same server as a Cloudflare Worker with one Durable Object per room. It speaks the
+same messages as `server/server.js`, so the browser code works with either. It is built for Cloudflare's
+free plan (100,000 requests a day): moves go out to each room in batches every 100 ms, quiet sockets
+hibernate, and through the server the browser sends its position every 2 s when alone and twice a second
+with company. Anonymous choice counts are kept in one shared object; `GET /tallies.json` returns them.
+
+```
+cd cloudflare && npm install
+npx wrangler dev --port 8790      # local; open the site with ?server=ws://127.0.0.1:8790
+npx wrangler deploy               # live
+```
+
+Note: Cloudflare's free allowance is per account, so this server shares it with any other Workers on
+the same account.
 
 ## How multiplayer works
 

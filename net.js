@@ -7,7 +7,8 @@ import { SERVER_URL } from "./config.js";
 const APP_ID = "careerquest-world-pace-v1";
 
 function serverUrl(room) {
-  let base = SERVER_URL;
+  // ?server=ws://localhost:8790 points one visit at a test server
+  let base = new URLSearchParams(location.search).get("server") || SERVER_URL;
   if (!base) {
     if (location.hostname.endsWith("github.io") || location.protocol === "file:") return null;
     base = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
@@ -42,7 +43,8 @@ function connectServer(room, handlers) {
           m.peers.forEach((p) => handlers.state(p.id, p));
           if (!settled) { settled = true; resolve(api); }
           handlers.status?.("server");
-        } else if (m.t === "state") handlers.state(m.id, m);
+        } else if (m.t === "states") m.list.forEach((s) => handlers.state(s.id, s)); // batched moves (Cloudflare server)
+        else if (m.t === "state") handlers.state(m.id, m);
         else if (m.t === "chat") handlers.chat(m.id, { t: m.text });
         else if (m.t === "choice") { if (m.id !== selfId) handlers.choice(m.id, m); handlers.total?.(`${m.m}:${m.s}`, m.total); }
         else if (m.t === "leave") handlers.leave(m.id);
